@@ -121,13 +121,13 @@ func (ss *Socks5) DialUDP(*M.Metadata) (_ net.PacketConn, err error) {
 	}()
 
 	bindAddr := addr.UDPAddr()
-	if bindAddr.IP.IsUnspecified() { /* e.g. "0.0.0.0" or "::" */
+	// if bindAddr.IP.IsUnspecified() { /* e.g. "0.0.0.0" or "::" */
 		udpAddr, err := net.ResolveUDPAddr("udp", ss.Addr())
 		if err != nil {
 			return nil, fmt.Errorf("resolve udp address %s: %w", ss.Addr(), err)
 		}
 		bindAddr.IP = udpAddr.IP
-	}
+	// }
 
 	return &socksPacketConn{PacketConn: pc, rAddr: bindAddr, tcpConn: c}, nil
 }

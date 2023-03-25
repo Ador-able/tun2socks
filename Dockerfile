@@ -6,6 +6,8 @@ COPY . /src
 RUN apk add --update --no-cache make git \
     && make tun2socks
 
+RUN apk update && apk add netcat-openbsd && apk add curl
+
 FROM alpine:latest
 LABEL org.opencontainers.image.source="https://github.com/xjasonlyu/tun2socks"
 

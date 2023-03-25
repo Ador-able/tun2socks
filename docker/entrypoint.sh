@@ -1,5 +1,11 @@
 #!/bin/sh
 
+# 创建/dev/net目录
+mkdir /dev/net
+
+# 创建TUN设备节点
+mknod /dev/net/tun c 10 200
+
 TUN="${TUN:-tun0}"
 ADDR="${ADDR:-198.18.0.1/15}"
 LOGLEVEL="${LOGLEVEL:-info}"
