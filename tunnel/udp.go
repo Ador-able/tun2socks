@@ -21,10 +21,6 @@ func SetUDPTimeout(t time.Duration) {
 	_udpSessionTimeout = t
 }
 
-func newUDPTracker(conn net.PacketConn, metadata *M.Metadata) net.PacketConn {
-	return statistic.NewUDPTracker(conn, metadata, statistic.DefaultManager)
-}
-
 // TODO: Port Restricted NAT support.
 func handleUDPConn(uc adapter.UDPConn) {
 	defer uc.Close()
@@ -32,9 +28,9 @@ func handleUDPConn(uc adapter.UDPConn) {
 	id := uc.ID()
 	metadata := &M.Metadata{
 		Network: M.UDP,
-		SrcIP:   net.IP(id.RemoteAddress),
+		SrcIP:   net.IP(id.RemoteAddress.AsSlice()),
 		SrcPort: id.RemotePort,
-		DstIP:   net.IP(id.LocalAddress),
+		DstIP:   net.IP(id.LocalAddress.AsSlice()),
 		DstPort: id.LocalPort,
 	}
 
@@ -45,7 +41,7 @@ func handleUDPConn(uc adapter.UDPConn) {
 	}
 	metadata.MidIP, metadata.MidPort = parseAddr(pc.LocalAddr())
 
-	pc = newUDPTracker(pc, metadata)
+	pc = statistic.DefaultUDPTracker(pc, metadata)
 	defer pc.Close()
 
 	var remote net.Addr
@@ -57,31 +53,27 @@ func handleUDPConn(uc adapter.UDPConn) {
 	pc = newSymmetricNATPacketConn(pc, metadata)
 
 	log.Infof("[UDP] %s <-> %s", metadata.SourceAddress(), metadata.DestinationAddress())
-	relayPacket(uc, pc, remote)
+	pipePacket(uc, pc, remote)
 }
 
-func relayPacket(left net.PacketConn, right net.PacketConn, to net.Addr) {
+func pipePacket(origin, remote net.PacketConn, to net.Addr) {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 
-	go func() {
-		defer wg.Done()
-		if err := copyPacketBuffer(right, left, to, _udpSessionTimeout); err != nil {
-			log.Warnf("[UDP] %v", err)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		if err := copyPacketBuffer(left, right, nil, _udpSessionTimeout); err != nil {
-			log.Warnf("[UDP] %v", err)
-		}
-	}()
+	go unidirectionalPacketStream(remote, origin, to, "origin->remote", &wg)
+	go unidirectionalPacketStream(origin, remote, nil, "remote->origin", &wg)
 
 	wg.Wait()
 }
 
-func copyPacketBuffer(dst net.PacketConn, src net.PacketConn, to net.Addr, timeout time.Duration) error {
+func unidirectionalPacketStream(dst, src net.PacketConn, to net.Addr, dir string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	if err := copyPacketData(dst, src, to, _udpSessionTimeout); err != nil {
+		log.Debugf("[UDP] copy data for %s: %v", dir, err)
+	}
+}
+
+func copyPacketData(dst, src net.PacketConn, to net.Addr, timeout time.Duration) error {
 	buf := pool.Get(pool.MaxSegmentSize)
 	defer pool.Put(buf)
 

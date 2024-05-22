@@ -1,11 +1,9 @@
 package tunnel
 
 import (
-	"errors"
 	"io"
 	"net"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/xjasonlyu/tun2socks/v2/common/pool"
@@ -17,74 +15,61 @@ import (
 )
 
 const (
-	tcpWaitTimeout = 5 * time.Second
+	// tcpWaitTimeout implements a TCP half-close timeout.
+	tcpWaitTimeout = 60 * time.Second
 )
 
-func newTCPTracker(conn net.Conn, metadata *M.Metadata) net.Conn {
-	return statistic.NewTCPTracker(conn, metadata, statistic.DefaultManager)
-}
+func handleTCPConn(originConn adapter.TCPConn) {
+	defer originConn.Close()
 
-func handleTCPConn(localConn adapter.TCPConn) {
-	defer localConn.Close()
-
-	id := localConn.ID()
+	id := originConn.ID()
 	metadata := &M.Metadata{
 		Network: M.TCP,
-		SrcIP:   net.IP(id.RemoteAddress),
+		SrcIP:   net.IP(id.RemoteAddress.AsSlice()),
 		SrcPort: id.RemotePort,
-		DstIP:   net.IP(id.LocalAddress),
+		DstIP:   net.IP(id.LocalAddress.AsSlice()),
 		DstPort: id.LocalPort,
 	}
 
-	targetConn, err := proxy.Dial(metadata)
+	remoteConn, err := proxy.Dial(metadata)
 	if err != nil {
 		log.Warnf("[TCP] dial %s: %v", metadata.DestinationAddress(), err)
 		return
 	}
-	metadata.MidIP, metadata.MidPort = parseAddr(targetConn.LocalAddr())
+	metadata.MidIP, metadata.MidPort = parseAddr(remoteConn.LocalAddr())
 
-	targetConn = newTCPTracker(targetConn, metadata)
-	defer targetConn.Close()
+	remoteConn = statistic.DefaultTCPTracker(remoteConn, metadata)
+	defer remoteConn.Close()
 
 	log.Infof("[TCP] %s <-> %s", metadata.SourceAddress(), metadata.DestinationAddress())
-	relay(localConn, targetConn) /* relay connections */
+	pipe(originConn, remoteConn)
 }
 
-// relay copies between left and right bidirectionally.
-func relay(left, right net.Conn) {
+// pipe copies copy data to & from provided net.Conn(s) bidirectionally.
+func pipe(origin, remote net.Conn) {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 
-	go func() {
-		defer wg.Done()
-		if err := copyBuffer(right, left); err != nil {
-			log.Warnf("[TCP] %v", err)
-		}
-		right.SetReadDeadline(time.Now().Add(tcpWaitTimeout))
-	}()
-
-	go func() {
-		defer wg.Done()
-		if err := copyBuffer(left, right); err != nil {
-			log.Warnf("[TCP] %v", err)
-		}
-		left.SetReadDeadline(time.Now().Add(tcpWaitTimeout))
-	}()
+	go unidirectionalStream(remote, origin, "origin->remote", &wg)
+	go unidirectionalStream(origin, remote, "remote->origin", &wg)
 
 	wg.Wait()
 }
 
-func copyBuffer(dst io.Writer, src io.Reader) error {
+func unidirectionalStream(dst, src net.Conn, dir string, wg *sync.WaitGroup) {
+	defer wg.Done()
 	buf := pool.Get(pool.RelayBufferSize)
-	defer pool.Put(buf)
-
-	_, err := io.CopyBuffer(dst, src, buf)
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		return nil /* ignore I/O timeout */
-	} else if errors.Is(err, syscall.EPIPE) {
-		return nil /* ignore broken pipe */
-	} else if errors.Is(err, syscall.ECONNRESET) {
-		return nil /* ignore connection reset by peer */
+	if _, err := io.CopyBuffer(dst, src, buf); err != nil {
+		log.Debugf("[TCP] copy data for %s: %v", dir, err)
 	}
-	return err
+	pool.Put(buf)
+	// Do the upload/download side TCP half-close.
+	if cr, ok := src.(interface{ CloseRead() error }); ok {
+		cr.CloseRead()
+	}
+	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	}
+	// Set TCP half-close timeout.
+	dst.SetReadDeadline(time.Now().Add(tcpWaitTimeout))
 }

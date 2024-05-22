@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/xjasonlyu/tun2socks/v2/component/dialer"
+	"github.com/xjasonlyu/tun2socks/v2/dialer"
 	M "github.com/xjasonlyu/tun2socks/v2/metadata"
 	"github.com/xjasonlyu/tun2socks/v2/proxy/proto"
 	"github.com/xjasonlyu/tun2socks/v2/transport/socks5"
@@ -49,7 +49,9 @@ func (ss *Socks5) DialContext(ctx context.Context, metadata *M.Metadata) (c net.
 	}
 	setKeepAlive(c)
 
-	defer safeConnClose(c, err)
+	defer func(c net.Conn) {
+		safeConnClose(c, err)
+	}(c)
 
 	var user *socks5.User
 	if ss.user != "" {
@@ -65,7 +67,7 @@ func (ss *Socks5) DialContext(ctx context.Context, metadata *M.Metadata) (c net.
 
 func (ss *Socks5) DialUDP(*M.Metadata) (_ net.PacketConn, err error) {
 	if ss.unix {
-		return nil, errors.New("not supported when unix domain socket is enabled")
+		return nil, fmt.Errorf("%w when unix domain socket is enabled", errors.ErrUnsupported)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), tcpConnectTimeout)
@@ -121,12 +123,17 @@ func (ss *Socks5) DialUDP(*M.Metadata) (_ net.PacketConn, err error) {
 	}()
 
 	bindAddr := addr.UDPAddr()
+
+	if bindAddr == nil {
+		return nil, fmt.Errorf("invalid UDP binding address: %#v", addr)
+	}
+
 	// if bindAddr.IP.IsUnspecified() { /* e.g. "0.0.0.0" or "::" */
-		udpAddr, err := net.ResolveUDPAddr("udp", ss.Addr())
-		if err != nil {
-			return nil, fmt.Errorf("resolve udp address %s: %w", ss.Addr(), err)
-		}
-		bindAddr.IP = udpAddr.IP
+	udpAddr, err := net.ResolveUDPAddr("udp", ss.Addr())
+	if err != nil {
+		return nil, fmt.Errorf("resolve udp address %s: %w", ss.Addr(), err)
+	}
+	bindAddr.IP = udpAddr.IP
 	// }
 
 	return &socksPacketConn{PacketConn: pc, rAddr: bindAddr, tcpConn: c}, nil

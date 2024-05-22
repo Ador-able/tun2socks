@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/xjasonlyu/tun2socks/v2/component/dialer"
+	"github.com/xjasonlyu/tun2socks/v2/dialer"
 	M "github.com/xjasonlyu/tun2socks/v2/metadata"
 	"github.com/xjasonlyu/tun2socks/v2/proxy/proto"
 	"github.com/xjasonlyu/tun2socks/v2/transport/socks4"
@@ -36,7 +36,9 @@ func (ss *Socks4) DialContext(ctx context.Context, metadata *M.Metadata) (c net.
 	}
 	setKeepAlive(c)
 
-	defer safeConnClose(c, err)
+	defer func(c net.Conn) {
+		safeConnClose(c, err)
+	}(c)
 
 	err = socks4.ClientHandshake(c, metadata.DestinationAddress(), socks4.CmdConnect, ss.userID)
 	return

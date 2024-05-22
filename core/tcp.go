@@ -3,6 +3,7 @@ package core
 import (
 	"time"
 
+	glog "gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -40,7 +41,7 @@ const (
 	tcpKeepaliveInterval = 30 * time.Second
 )
 
-func withTCPHandler(handle func(adapter.TCPConn), printf func(string, ...any)) option.Option {
+func withTCPHandler(handle func(adapter.TCPConn)) option.Option {
 	return func(s *stack.Stack) error {
 		tcpForwarder := tcp.NewForwarder(s, defaultWndSize, maxConnAttempts, func(r *tcp.ForwarderRequest) {
 			var (
@@ -52,7 +53,7 @@ func withTCPHandler(handle func(adapter.TCPConn), printf func(string, ...any)) o
 
 			defer func() {
 				if err != nil {
-					printf("forward tcp request %s:%d->%s:%d: %s",
+					glog.Debugf("forward tcp request: %s:%d->%s:%d: %s",
 						id.RemoteAddress, id.RemotePort, id.LocalAddress, id.LocalPort, err)
 				}
 			}()
@@ -100,7 +101,7 @@ func setSocketOptions(s *stack.Stack, ep tcpip.Endpoint) tcpip.Error {
 	{ /* TCP recv/send buffer size */
 		var ss tcpip.TCPSendBufferSizeRangeOption
 		if err := s.TransportProtocolOption(header.TCPProtocolNumber, &ss); err == nil {
-			ep.SocketOptions().SetReceiveBufferSize(int64(ss.Default), false)
+			ep.SocketOptions().SetSendBufferSize(int64(ss.Default), false)
 		}
 
 		var rs tcpip.TCPReceiveBufferSizeRangeOption

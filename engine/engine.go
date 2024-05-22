@@ -2,19 +2,20 @@ package engine
 
 import (
 	"errors"
-	"fmt"
 	"net"
+	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/docker/go-units"
+	"github.com/google/shlex"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"github.com/xjasonlyu/tun2socks/v2/component/dialer"
 	"github.com/xjasonlyu/tun2socks/v2/core"
 	"github.com/xjasonlyu/tun2socks/v2/core/device"
 	"github.com/xjasonlyu/tun2socks/v2/core/option"
+	"github.com/xjasonlyu/tun2socks/v2/dialer"
 	"github.com/xjasonlyu/tun2socks/v2/engine/mirror"
 	"github.com/xjasonlyu/tun2socks/v2/log"
 	"github.com/xjasonlyu/tun2socks/v2/proxy"
@@ -91,6 +92,18 @@ func stop() (err error) {
 	return err
 }
 
+func execCommand(cmd string) error {
+	parts, err := shlex.Split(cmd)
+	if err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return errors.New("empty command")
+	}
+	_, err = exec.Command(parts[0], parts[1:]...).Output()
+	return err
+}
+
 func general(k *Key) error {
 	level, err := log.ParseLevel(k.LogLevel)
 	if err != nil {
@@ -159,6 +172,23 @@ func netstack(k *Key) (err error) {
 		return errors.New("empty device")
 	}
 
+	if k.TUNPreUp != "" {
+		log.Infof("[TUN] pre-execute command: `%s`", k.TUNPreUp)
+		if preUpErr := execCommand(k.TUNPreUp); preUpErr != nil {
+			log.Warnf("[TUN] failed to pre-execute: %s: %v", k.TUNPreUp, preUpErr)
+		}
+	}
+
+	defer func() {
+		if k.TUNPostUp == "" || err != nil {
+			return
+		}
+		log.Infof("[TUN] post-execute command: `%s`", k.TUNPostUp)
+		if postUpErr := execCommand(k.TUNPostUp); postUpErr != nil {
+			log.Warnf("[TUN] failed to post-execute: %s: %v", k.TUNPostUp, postUpErr)
+		}
+	}()
+
 	if _defaultProxy, err = parseProxy(k.Proxy); err != nil {
 		return
 	}
@@ -166,6 +196,11 @@ func netstack(k *Key) (err error) {
 
 	if _defaultDevice, err = parseDevice(k.Device, uint32(k.MTU)); err != nil {
 		return
+	}
+
+	var multicastGroups []net.IP
+	if multicastGroups, err = parseMulticastGroups(k.MulticastGroups); err != nil {
+		return err
 	}
 
 	var opts []option.Option
@@ -192,10 +227,8 @@ func netstack(k *Key) (err error) {
 	if _defaultStack, err = core.CreateStack(&core.Config{
 		LinkEndpoint:     _defaultDevice,
 		TransportHandler: &mirror.Tunnel{},
-		PrintFunc: func(format string, v ...any) {
-			log.Warnf("[STACK] %s", fmt.Sprintf(format, v...))
-		},
-		Options: opts,
+		MulticastGroups:  multicastGroups,
+		Options:          opts,
 	}); err != nil {
 		return
 	}
